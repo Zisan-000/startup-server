@@ -301,7 +301,7 @@ async function run() {
 
     app.get("/api/opportunities", async (req, res) => {
       try {
-        const { search, workType, industry } = req.query;
+        const { search, workType, industry, page, perPage } = req.query;
         const pipeline = [];
 
         // 1. Convert the string startup_id field into an ObjectId type dynamically
@@ -332,7 +332,6 @@ async function run() {
         // 4. Build the filter match query object
         const matchQuery = {};
 
-        // Search by Role Title OR Required Skills using $regex [cite: 296, 297, 298]
         if (search) {
           matchQuery.$or = [
             { role_title: { $regex: search, $options: "i" } },
@@ -340,12 +339,10 @@ async function run() {
           ];
         }
 
-        // Filter by Work Type using $in [cite: 300, 302]
         if (workType) {
           matchQuery.work_type = { $in: workType.split(",") };
         }
 
-        // Filter by Industry looking inside the joined startup object metadata using $in [cite: 301, 302]
         if (industry) {
           matchQuery["startup_info.industry"] = { $in: industry.split(",") };
         }
@@ -355,12 +352,34 @@ async function run() {
           pipeline.push({ $match: matchQuery });
         }
 
+        // --- NEW: PAGINATION IMPLEMENTATION ---
+        const currentPage = parseInt(page) || 1;
+        const limit = parseInt(perPage) || 12;
+        const skip = (currentPage - 1) * limit;
+
+        // Use $facet to execute two parallel pipelines: one for data, one for the total count
+        pipeline.push({
+          $facet: {
+            metadata: [{ $count: "total" }],
+            data: [{ $skip: skip }, { $limit: limit }],
+          },
+        });
+
         const result = await opportunityCollection
           .aggregate(pipeline)
           .toArray();
-        res.send(Array.isArray(result) ? result : []);
+
+        // Extract the separated data from the facet result
+        const items = result[0]?.data || [];
+        const totalCount = result[0]?.metadata[0]?.total || 0;
+
+        res.send({
+          opportunities: items,
+          total: totalCount,
+          page: currentPage,
+          totalPages: Math.ceil(totalCount / limit),
+        });
       } catch (error) {
-        res.status(500).send([]);
         console.error("Aggregation lookup failed:", error);
         res
           .status(500)
